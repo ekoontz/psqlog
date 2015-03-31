@@ -1,0 +1,26 @@
+.shadow {
+  clear: both;
+  float:left;
+  background: url(img/shadow.gif) no-repeat bottom right;
+  margin: 20px 0 0 17px !important;
+  margin: 20px 0 0 8px;
+}
+
+.shadow img {
+  display: block;
+  position: relative;
+  background-color: #fff;
+  border: 1px solid #a9a9a9;
+  margin: -6px 6px 6px -6px;
+  padding: 4px;
+}
+
+.shadow div {
+  display: block;
+  position: relative;
+  background-color: #fff;
+  border: 1px solid #a9a9a9;
+  margin: -6px 6px 6px -6px;
+  padding: 0.5em;
+}
+

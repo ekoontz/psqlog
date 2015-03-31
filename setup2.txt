@@ -1,0 +1,9 @@
+#!/bin/sh
+
+dropdb -U www family
+createdb -U www family
+xsltproc view2sql.xsl family.xml | psql -U www family
+
+php -c php.ini harness.php > family-session.xml
+
+

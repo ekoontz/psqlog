@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<psqlog>
+<!-- 
+ COPYRIGHT 2007 Eugene Koontz <ekoontz@hiro-tan.org>
+ This file is part of Psqlog : an 
+ implementation of Prolog in PostgreSQL
+
+ Licensed under the GNU General Public License version 2 or higher.
+
+   This file declares the mapping between on the one hand, 
+   the Prolog predicates :
+     telecommutes(X) and superior(X,Y) 
+   and the database. It is used as an input to view2sql.xsl to create the
+   SQL that creates the necessary database views.
+
+-->
+  <pred1 name="telecommuter" table="employee" primary_key="employee_id">
+    <arg name="name" column="telecommutes"/>
+  </pred1>
+  
+  <pred2 name="manager" table="management" primary_key="management_id">
+    <arg name="name" table="employee" column="manager" equals="employee_id"/>
+    <arg name="name" table="employee" column="managed" equals="employee_id"/>
+  </pred2>
+
+</psqlog>
+    

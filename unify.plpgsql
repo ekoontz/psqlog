@@ -1,0 +1,494 @@
+-- COPYRIGHT 2007 Eugene Koontz <ekoontz@hiro-tan.org>
+-- This file is part of Psqlog : an 
+-- implementation of Prolog in PostgreSQL
+--
+-- Licenced under the GNU General Public License version 3.
+-- 
+--
+
+
+CREATE OR REPLACE FUNCTION unify1(getpred varchar, arg1 varchar, arg1_type char,
+       	  	  	   	  OUT unify_pred varchar, OUT unify_arg1 varchar) 
+				  RETURNS SETOF record AS $$  
+       DECLARE
+	satisfier RECORD;
+       BEGIN 
+		FOR satisfier IN 
+		    SELECT * FROM pred AS pred_table,arg AS each_arg1
+		  	  WHERE 
+			  	pred_table.pred = getpred 
+			    AND 
+			    	pred_table.pred_id = each_arg1.pred_id 
+		            AND
+				( arg1_type = 'v' OR each_arg1.name = arg1 OR each_arg1.type = 'v')
+		LOOP
+-- 
+-- for each value in satisfier:
+-- look at satisfier.antec_of:
+--  if NULL,
+--    RETURN NEXT;
+--  else
+--    recursively call unify1() on each of the antecedents
+--    
+	      	      SELECT INTO unify_pred, unify_arg1 satisfier.pred, satisfier.name;
+	      	      RETURN NEXT;
+	      	END LOOP;
+        RETURN;
+        END; 
+$$ LANGUAGE plpgsql; 
+
+CREATE OR REPLACE FUNCTION unify2(getpred varchar,
+       	  	  	          arg1 varchar, arg2 varchar, 
+       	  	  	          arg1_value varchar, arg2_value varchar,
+			   	  OUT unify_arg1 varchar, OUT unify_arg2 varchar) 
+				  RETURNS SETOF record AS $$  
+       DECLARE
+	satisfier RECORD;
+	rule_rows RECORD;
+	antecedent_row RECORD;
+	antecedent_arg_row RECORD;
+	all_antecedents_true bool;
+	antecedent_true bool;
+	results_from_this_rule RECORD;
+	args RECORD;
+	conjunct_count int;
+	each_arg RECORD;
+	args_string varchar;
+	ret_arg1 varchar;
+	ret_arg2 varchar;
+
+	find_satisfiers_q varchar;
+	arg1_value_q varchar;
+	arg2_value_q varchar;
+
+	instance_id text;
+	throwaway integer;
+
+        BEGIN 
+
+--	      RAISE NOTICE ' unify2 ( % , % , % , % , % ) ',getpred,arg1,arg2,arg1_value,arg2_value;
+
+	      IF ( arg1_value IS NOT NULL) THEN
+	      	      arg1_value_q := 
+'( each_arg1.type = \'v\' OR ( each_arg1.type = \'c\' AND each_arg1.name = \''|| arg1_value || '\' ) )';
+   	      ELSE
+	      	      arg1_value_q := '( TRUE )';
+	      END IF;
+
+	      IF ( arg2_value IS NOT NULL) THEN
+	      	      arg2_value_q := 
+'( each_arg2.type = \'v\' OR ( each_arg2.type = \'c\' AND each_arg2.name = \''|| arg2_value || '\' ) )';
+   	      ELSE
+	      	      arg2_value_q := '( TRUE )';
+	      END IF;
+
+	      find_satisfiers_q :=
+'SELECT 
+		  	 pred_table.pred_id,
+                         each_arg1.name AS unify_arg1,
+                         each_arg2.name AS unify_arg2
+		  FROM pred AS pred_table, arg AS each_arg1, arg AS each_arg2
+		  WHERE 
+		  	pred_table.pred = \'' || getpred || '\'
+		    AND 
+		    	pred_table.pred_id = each_arg1.pred_id 
+		    AND 
+		    	pred_table.pred_id = each_arg2.pred_id 
+		    AND
+			each_arg1.position = 1
+		    AND
+			each_arg2.position = 2
+	            AND ' || arg1_value_q || ' 
+	            AND ' || arg2_value_q || '
+		    AND
+		        NOT EXISTS ( SELECT 1 FROM pred AS inner_pred WHERE pred_table.antec_of = inner_pred.pred_id )';
+
+	        FOR satisfier IN 
+	      	  EXECUTE find_satisfiers_q
+-- now, unify argument values: arg1_name, arg1_type and arg2_name, arg2_type with
+-- values returned in this satisfier row.
+
+		LOOP
+
+			args_string := '';
+
+			FOR each_arg IN 
+			    SELECT * FROM get_args_for_pred(satisfier.pred_id) LOOP
+			    	   args_string := args_string || ' , ' || each_arg.arg_name;
+			END LOOP;
+
+			conjunct_count:= count(*) FROM pred WHERE antec_of = satisfier.pred_id;
+
+			IF (conjunct_count = 0) THEN
+-- simply true: no conjuncts: so return all unifications for this rule.
+   	  	   	      ret_arg1 := name FROM arg WHERE pred_id = satisfier.pred_id AND position = 1;
+   	  	   	      ret_arg2 := name FROM arg WHERE pred_id = satisfier.pred_id AND position = 2;
+
+			      SELECT INTO unify_arg1, unify_arg2 ret_arg1,ret_arg2;
+			      RETURN NEXT;
+			ELSE
+
+		           instance_id := set_up_instance(satisfier.pred_id);
+			   
+			   throwaway := update_instance(instance_id,1,arg1_value);
+			   throwaway := update_instance(instance_id,2,arg2_value);
+
+			   FOR results_from_this_rule IN
+			        SELECT * FROM unify_right_side(satisfier.pred_id,0,
+							       conjunct_count,instance_id)
+		   	   LOOP			    
+
+--			     RAISE NOTICE ' unify_right_side returned instance_id: %',results_from_this_rule.unify_instance_id;
+
+			     unify_arg1 := value FROM instance WHERE id = results_from_this_rule.unify_instance_id AND position = 1;
+			     unify_arg2 := value FROM instance WHERE id = results_from_this_rule.unify_instance_id AND position = 2;
+
+--			     SELECT INTO
+--			    	   unify_arg1, unify_arg2
+--				   results_from_this_rule.unify_arg1, results_from_this_rule.unify_arg2;
+			     RETURN NEXT;
+			   END LOOP;
+			 END IF;
+	      	END LOOP;	
+	      RETURN;
+        END; 
+$$ LANGUAGE plpgsql; 
+
+
+CREATE OR REPLACE FUNCTION update_instance(instance_id text, pos integer, set_to_value varchar)
+       RETURNS integer AS $$
+       DECLARE 
+       	       arg_name varchar;
+	       expr varchar;
+       BEGIN
+
+		IF set_to_value IS NOT NULL THEN
+
+			arg_name := arg.name FROM instance,arg WHERE instance.id = instance_id AND arg.pred_id = instance.pred AND arg.position = pos AND instance.arg = arg.name;
+
+			expr := 'UPDATE instance SET value = \''||set_to_value||'\'
+		      	       	   WHERE instance.id = \''||instance_id||'\' AND instance.arg = \''||arg_name||'\'';
+
+			EXECUTE expr;
+		END IF;
+		       
+
+
+       RETURN NULL;
+END;
+$$ LANGUAGE plpgsql; 
+
+CREATE OR REPLACE FUNCTION get_args_for_pred(rule_id varchar, OUT arg_name varchar, OUT arg_type char, OUT arg_value varchar) 
+       RETURNS SETOF record AS $$
+
+       DECLARE
+	result RECORD;
+       BEGIN
+		FOR result IN
+		    SELECT DISTINCT name, type FROM arg 
+                         WHERE (pred_id = rule_id)
+                                   OR 
+			       (pred_id IN 
+			       		(SELECT pred_id FROM pred WHERE antec_of = rule_id)) ORDER BY name ASC
+		LOOP
+			SELECT INTO arg_name, arg_type, arg_value result.name, result.type, 'foo';
+			RETURN NEXT;
+		END LOOP;
+
+		RETURN;
+       END;
+$$ LANGUAGE plpgsql; 
+
+CREATE OR REPLACE FUNCTION get_args_string_for_pred(rule_id varchar) 
+       RETURNS varchar AS $$
+
+       DECLARE
+	result varchar;
+	arg_row RECORD;
+	total int;
+       BEGIN   
+       	       total := count(*) FROM arg WHERE (pred_id = rule_id);
+       	       result := '';
+		FOR arg_row IN
+		    SELECT name,position FROM arg 
+                         WHERE (pred_id = rule_id) ORDER BY position ASC
+		LOOP
+			result := result || '\'' ||  arg_row.name || '\'';
+			IF ( arg_row.position < total) THEN
+				result := result || ' , ';
+			END IF;
+		END LOOP;
+
+	       RETURN result;
+       END;
+$$ LANGUAGE plpgsql; 
+
+CREATE OR REPLACE FUNCTION get_vals_string_for_pred(rule_id varchar, instance_id text) 
+       RETURNS varchar AS $$
+
+       DECLARE
+	result varchar;
+	arg_row RECORD;
+	total int;
+	arg_val varchar;
+       BEGIN   
+
+       	        total := count(*) FROM arg WHERE (pred_id = rule_id);
+       	        result := '';
+
+--		RAISE NOTICE ' SELECT * FROM arg WHERE (pred_id = %) ORDER BY position ASC',rule_id;
+
+		FOR arg_row IN
+		    SELECT * FROM arg 
+                         WHERE (pred_id = rule_id) ORDER BY position ASC
+		LOOP
+
+--			RAISE NOTICE 'arg number % has name %' , arg_row.position, arg_row.name;
+
+--			RAISE NOTICE 'value FROM instance WHERE id=% AND arg = %',instance_id,arg_row.name;
+			arg_val := value FROM instance WHERE id=instance_id AND arg = arg_row.name;
+
+			IF arg_val IS NULL THEN
+			   arg_val := 'NULL';
+			ELSE
+			   arg_val := '\'' || arg_val || '\'';
+			END IF;
+
+--			RAISE NOTICE ' arg_val is : % ' , arg_val;
+			result := result || arg_val;
+			IF ( arg_row.position < total) THEN
+				result := result || ' , ';
+			END IF;
+		END LOOP;
+
+	       RETURN result;
+       END;
+$$ LANGUAGE plpgsql; 
+
+CREATE OR REPLACE FUNCTION set_up_instance(pred_id varchar)
+       RETURNS text AS $$
+       DECLARE 
+       	       instance_id text;
+	       each_arg record;
+       BEGIN   
+--       	     RAISE NOTICE ' inserting instance with pred_id: %', pred_id; 
+
+     	     instance_id := nextval('instance_seq'::text);
+
+	     FOR each_arg IN SELECT * FROM arg WHERE arg.pred_id = pred_id ORDER BY position ASC
+	     LOOP
+              INSERT INTO instance (id,pred,arg,value,position) VALUES (instance_id,pred_id,each_arg.name,NULL,each_arg.position);
+	     END LOOP;
+	     RETURN instance_id;
+      END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION copy_instance ( from_instance_id text)
+       RETURNS text AS $$
+       DECLARE 
+       	       instance_id text;
+	       each_variable record;
+       BEGIN   
+       	     instance_id := nextval('instance_seq'::text);
+
+	     FOR each_variable IN SELECT * FROM instance WHERE id = from_instance_id
+	     LOOP
+--		RAISE NOTICE 'copying arg: % with value: % from % to %',each_variable.arg,each_variable.value,from_instance_id,instance_id;
+
+                INSERT INTO instance (id,pred,arg,value,position) VALUES (instance_id,each_variable.pred,each_variable.arg,each_variable.value,each_variable.position);
+	     END LOOP;
+	     RETURN instance_id;
+       END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION unify_right_side(left_side_pred varchar,
+       	  	  	   		    conjunct_number int,
+					    count_conjuncts int,
+					    instance_id text,
+					    OUT status int,
+       	  	  	   		    OUT unify_instance_id text)
+				  RETURNS SETOF record AS $$  
+       DECLARE
+	result RECORD;
+	inner_result RECORD;
+	update_arg RECORD;
+	conjunct_id varchar;
+	left_side_pred_name varchar;
+	conjunct_pred varchar;
+	conjunct_query varchar;
+	new_instance_id text;
+	throwaway integer;
+	existing_value varchar;
+	arg_value varchar;
+	i integer;
+	update_arg_expression varchar;
+
+       BEGIN 
+
+--       	     RAISE NOTICE ' unify_right_side( % , % , % , % )',left_side_pred,conjunct_number,count_conjuncts, instance_id;
+
+       	     left_side_pred_name := pred FROM pred WHERE pred_id='left_side_pred';
+
+	     -- Get conjunct # conjunct_number for right side.
+       	     conjunct_id := pred_id FROM pred 
+	      		     	    WHERE antec_of = left_side_pred
+                  	    	    LIMIT 1 OFFSET conjunct_number;
+
+       	     conjunct_pred := pred FROM pred 
+	      		     	    WHERE antec_of = left_side_pred
+                  	    	    LIMIT 1 OFFSET conjunct_number;
+
+	     -- args
+	     conjunct_query := 'SELECT unify_arg1,unify_arg2,arg1.name AS var1,arg2.name AS var2 FROM unify2( \'' || conjunct_pred || '\' , ' ||  get_args_string_for_pred(conjunct_id) || ' , ' || get_vals_string_for_pred(conjunct_id,instance_id) ||' ), arg AS arg1, arg AS arg2 WHERE arg1.pred_id=\''||conjunct_id||'\' AND arg2.pred_id=\''||conjunct_id||'\' AND arg1.position=1 AND arg2.position=2 AND arg1.pred_id = arg2.pred_id';
+
+--	     RAISE NOTICE ' unify_right_side conjunct query: %' , conjunct_query;
+
+	     IF conjunct_number = count_conjuncts - 1 THEN
+
+	     -- 
+	     -- 1) base case
+	     -- 
+	     	     FOR result IN
+		       	 EXECUTE conjunct_query
+		     LOOP
+
+
+		            new_instance_id := copy_instance(instance_id);
+
+			-- 2) add bindings from result to new instance.
+
+			existing_value := id FROM instance WHERE id = new_instance_id AND arg = result.var1;
+			if existing_value IS NULL THEN
+				update_arg_expression := 'INSERT INTO instance (arg,value,id,pred) VALUES 
+						      	 (\''||result.var1||'\',\''||result.unify_arg1||'\',\''||new_instance_id||'\',\''|| left_side_pred ||'\')';
+
+			ELSE
+				update_arg_expression := 'UPDATE instance SET value = \''||result.unify_arg1||'\' 
+    					      	 	 WHERE instance.id = \''||new_instance_id||'\' AND
+							       instance.arg =\''||result.var1||'\'';
+			END IF;
+
+			EXECUTE update_arg_expression;
+
+			existing_value := id FROM instance WHERE id = new_instance_id AND arg = result.var2;
+			if existing_value IS NULL THEN
+				update_arg_expression := 'INSERT INTO instance (arg,value,id,pred) VALUES 
+						      	 (\''||result.var2||'\',\''||result.unify_arg2||'\',\''||new_instance_id||'\',\''|| left_side_pred ||'\')';
+
+			ELSE
+				update_arg_expression := 'UPDATE instance SET value = \''||result.unify_arg2||'\' 
+    					      	 	 WHERE instance.id = \''||new_instance_id||'\' AND
+							       instance.arg =\''||result.var2||'\'';
+			END IF;
+
+			EXECUTE update_arg_expression;
+
+
+
+		     	    SELECT INTO
+		    	    	   unify_instance_id
+				   new_instance_id;
+		            RETURN NEXT;
+
+		     END LOOP;
+		     
+		     RETURN;
+             ELSE
+
+	     -- 
+	     -- 2) recursive case
+	     -- 
+
+	     	     FOR result IN
+		       	 EXECUTE conjunct_query
+		     LOOP
+
+		        -- 1) copy existing instance_id rows to new instance.
+
+		        new_instance_id := copy_instance(instance_id);
+
+			-- 2) add bindings from result to new instance.
+
+			existing_value := id FROM instance WHERE id = new_instance_id AND arg = result.var1;
+			if existing_value IS NULL THEN
+				update_arg_expression := 'INSERT INTO instance (arg,value,id,pred) VALUES 
+						      	 (\''||result.var1||'\',\''||result.unify_arg1||'\',\''||new_instance_id||'\',\''|| left_side_pred ||'\')';
+
+			ELSE
+				update_arg_expression := 'UPDATE instance SET value = \''||result.unify_arg1||'\' 
+    					      	 	 WHERE instance.id = \''||new_instance_id||'\' AND
+							       instance.arg =\''||result.var1||'\'';
+			END IF;
+
+			EXECUTE update_arg_expression;
+
+			existing_value := id FROM instance WHERE id = new_instance_id AND arg = result.var2;
+			if existing_value IS NULL THEN
+				update_arg_expression := 'INSERT INTO instance (arg,value,id,pred) VALUES 
+						      	 (\''||result.var2||'\',\''||result.unify_arg2||'\',\''||new_instance_id||'\',\''|| left_side_pred ||'\')';
+
+			ELSE
+				update_arg_expression := 'UPDATE instance SET value = \''||result.unify_arg2||'\' 
+    					      	 	 WHERE instance.id = \''||new_instance_id||'\' AND
+							       instance.arg =\''||result.var2||'\'';
+			END IF;
+
+			EXECUTE update_arg_expression;
+
+			-- 3) recursively call this function on next conjunct.
+
+			FOR inner_result IN
+					        SELECT * FROM unify_right_side(left_side_pred,conjunct_number + 1,
+									       count_conjuncts,new_instance_id)
+									   
+		         LOOP
+		     	    SELECT INTO
+		    	    	   unify_instance_id
+				   inner_result.unify_instance_id;
+		            RETURN NEXT;
+
+		         END LOOP;
+			
+		     END LOOP;		
+		     
+		     RETURN;
+
+	     END IF;
+
+	     RETURN;
+
+       END;
+
+$$ LANGUAGE plpgsql; 
+
+CREATE OR REPLACE FUNCTION psqlog_insert2 ( 
+       pred1 varchar, arg1 varchar, arg2 varchar, conseq_id varchar)
+       RETURNS text AS $$
+       DECLARE ret_pred_id varchar;
+       BEGIN   
+
+               RAISE NOTICE 'psqlog_insert2(%,%,%,%)' , pred1,arg1,arg2,conseq_id;
+
+       	       IF conseq_id IS NOT NULL THEN
+
+	       	       INSERT INTO d_pred (pred,antec_of) VALUES (pred1,conseq_id);
+	       ELSE
+       	       	       INSERT INTO d_pred (pred) VALUES (pred1);
+
+	       END IF;
+
+-- seems to be the only way i know to get the pred_id of the row just
+-- INSERTed..(?)
+	       ret_pred_id := pred_id FROM d_pred ORDER BY pred_id DESC LIMIT 1;
+
+       	       INSERT INTO d_arg (type,name,pred_id,position) 
+                  VALUES ('v',arg1,ret_pred_id,1);
+
+       	       INSERT INTO d_arg (type,name,pred_id,position) 
+                  VALUES ('v',arg2,ret_pred_id,2);
+
+	       RETURN ret_pred_id;
+
+       END;
+$$ LANGUAGE plpgsql;
+

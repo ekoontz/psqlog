@@ -1,0 +1,196 @@
+Psqlog - a Prolog implementation in PostgreSQL
+---------------------
+
+- Table setup
+
+There are only 2 tables in psqlog: 
+
+--preds:
+
+A row in the pred table is simply an id, a character string and a (possibly NULL) antec_of. A non-NULL antec_of 
+means that the row in question is right side of a rule, and the antec_of is an index into the same table for the 
+row of the left side (the consequent) of the rule. For example,
+in the prolog rule:
+
+(1) father(X,Y) :- male(X), child(X,Y)
+
+The preds male and child are antecedents of the pred father. Therefore, the pred table would look something like:
+
+ id   |   name   | antec_of 
+------+----------+----------
+ 100  | male     | 102         
+ 101  | child    | 102
+ 102  | father   | 
+
+So preds 100 and 101 both have their antec_of set to the id of their precedent predicate, 'father', with id 102. This latter 
+row has a NULL antec_of because it is the consequent. Facts, which are simple rules with no antecedents, also 
+have a NULL antec_of. For example, the fact:
+
+(2) male(joe)
+
+would be represented as a row similar to 102 above. Unlike left sides of rules, however, a fact has no rows which have
+the fact's id as their antec_of value.
+
+Note that there as many rows in the pred table as there are predicates in rules and facts; thus another rule such as:
+
+(3) son(A,B) :- male(A),child(A,B)
+
+would have separate rows for 'male' and 'child' from those used in the 'father' rule above in (1).
+
+
+--args:
+
+This table describes the arguments of predicates according to their position and name. An arg may be either a 
+constant, which is encoded by the 'type' column's values of 'c' or 'v', respectively. The arg's pred is given by the 
+pred_id column, and the position has a column as well. Note that it would be an error for 2 rows to have 
+both the same pred_id and the same value for their position column. For example, the relevant five rows 
+in the args table for the rule in (1) would be (with possiby different values for the id column):
+
+  id   | type |   name   | pred_id | position 
+-------+------+----------+---------+----------
+ 16623 | V    | X        |     100 |        1
+ 16624 | V    | Y        |     100 |        2
+ 16625 | V    | X        |     101 |        1
+ 16625 | V    | X        |     102 |        1
+ 16625 | V    | Y        |     102 |        2
+
+
+- Integrating with existing tables
+
+Psqlog can be applied to existing table structures by making use of views. SQL views allow us to map 
+an existing domain (a set of tables and relations) onto Psqlog's very minimal set of tables.
+
+As mentioned above, Psqlog has only two tables : preds and args. However, by using views, we can convert existing
+tables to the pred and arg structure used by Psqlog.
+
+Example: one-place predicate.
+=============================
+
+Suppose we want to have a table of employees. One column 'telecommutes' is a boolean flag
+that indicates whether the given employee is a telecommuter or not. We want to map this 
+relation to the predicate "telecommutes(X)" - that is, in prolog, we want to ask our system:
+
+:- telecommutes(Bob)
+
+And receive a response 
+
+"Yes"
+
+if Bob is a telecommuter, and "No" otherwise.
+
+Our domain-specific table looks like:
+
+CREATE TABLE employee (
+       employee_id integer PRIMARY KEY,
+       name varchar(256),
+       telecommutes boolean
+);
+
+           Table "public.employee"
+ Column        |          Type          | Modifiers 
+---------------+------------------------+-----------
+ name          | character varying(128) | 
+ telecommutes  | boolean                | 
+ id            | integer                | not null
+
+We can generate a 'telecommutes_pred' and 'telecommutes_arg' based on this as follows:
+
+  CREATE VIEW telecommutes_pred AS 
+    SELECT 
+        id,'telecommutes' as telecommutes,'' AS antec_of 
+    FROM employee WHERE telecommutes='t';
+
+  CREATE VIEW telecommutes_arg AS 
+    SELECT 
+        'c' AS type,employee.name,employee.id AS pred_id,1 AS position 
+    FROM employee WHERE telecommutes='t';
+
+Given the following sample values in employee:
+
+ id | name | telecommutes 
+----+------+---------
+  1 | Bob  | t
+  2 | John | t
+  3 | Bill | f
+  3 | Andy | f
+
+   (Figure 1: sample values for employee table)
+
+The above views yield:
+
+SELECT * FROM telecommutes_pred;
+ id | telecommutes | antec_of 
+----+--------------+----------
+  1 | telecommutes | 
+  2 | telecommutes | 
+
+
+SELECT * FROM telecommutes_arg; 
+ type | name | pred_id | position 
+------+------+---------+----------
+ c    | Bob  |       1 |        1
+ c    | John |       2 |        1
+
+
+
+Example: two-place predicate.
+=============================
+
+Suppose we have the following table to express how employees can report to each other:
+
+ Table "public.management" 
+ Column  |  Type   | Modifiers 
+---------+---------+-----------
+ managed | integer | 
+ manager | integer | 
+ id      | integer | primary key
+
+We then create the following views:
+CREATE VIEW boss_pred AS 
+     SELECT management.id,'manages' AS manages, '' AS antec_of FROM management;
+
+CREATE VIEW boss_arg AS 
+   SELECT 
+     'c' AS type,
+     boss.name AS name,
+     management.id AS pred_id,
+     1 AS position 
+   FROM 
+     employee AS boss, employee AS worker,management 
+   WHERE worker.id = management.managed AND boss.id=management.manager 
+ UNION 
+   SELECT 'c' AS type,
+     worker.name AS name,
+     management.id AS pred_id,
+     2 AS position 
+  FROM 
+    employee AS boss, employee AS worker,management 
+  WHERE worker.id = management.managed AND boss.id=management.manager;
+
+For example, suppose we have the following row in the management table:
+(note: managed and manager column values are indices into the employee table,
+as dumped above in Figure 1.
+
+psqlog=# select * from management;
+ managed | manager | id 
+---------+---------+----
+       2 |       3 |  1
+
+Now we can select from the above views and derive the following:
+
+psqlog=# SELECT * FROM boss_pred;
+ id | manages | antec_of 
+----+---------+----------
+  1 | manages | 
+(1 row)
+
+psqlog=# SELECT * FROM boss_arg; 
+ type | name | pred_id | position 
+------+------+---------+----------
+ c    | Bill |       1 |        1
+ c    | John |       1 |        2
+(2 rows)
+
+
+
+

@@ -1,0 +1,121 @@
+@import "shadow.css";
+
+body {
+    font-family: sans-serif;
+    line-height: 1.5em;
+}
+
+div#contents {
+    left:0.25em;
+    position:fixed;
+    width:25%;
+}
+
+div {
+    margin-bottom:1em;
+}
+
+div.right {
+    margin-left:27%;
+    width:60%;
+    margin-bottom:1em;
+}
+
+div.section {
+    width:100%;
+}
+
+h3 { 
+  width:95%;
+  border-bottom:2px solid black;
+ }
+
+h4 { 
+  width:85%;
+  margin-left:5em;
+  
+  border-bottom:2px solid black;
+ }
+
+h1 { 
+  padding:0.5em;
+}
+
+
+
+#key {
+  width:10%;
+  height:40%;
+/*  visibility:hidden;*/
+  padding-right:0em;
+  height:40%;
+    background:#eeeeee;
+    border-right:2px solid #00FFFF;
+    border-bottom:2px solid #00FFFF;
+    float:left;
+    position:fixed;
+    left:0;
+    top:0;
+    padding-top:0.5em;
+    padding-left:0.5em;
+    padding-bottom:0.5em;
+}
+      
+#key ul {
+    list-style-type: none;
+    padding:0;
+}
+
+#key li {
+    padding-left:0.25em;
+}
+
+
+#maincontent {
+    float:right;
+    width:75%;
+    border: 0px solid black;
+    padding: 4px;
+}
+
+.head {
+    font-size:x-large;
+}
+
+.header {
+    font-size:large;
+}
+
+.section {
+    margin:1em;
+    padding:1em;
+}
+
+.summary {
+    margin-left:20px;
+}
+
+.subsection {
+    margin-left: 20px;      
+}
+
+.focused_section {
+    border:2px solid #eeeeee;
+}
+
+.focused {
+   
+    background: white;
+}
+
+.normal {
+    background: #eeeeee;
+}
+
+div.code {
+    width:auto; 
+    border:2px solid blue;
+    margin:0.5em; 
+    padding:0.5em;
+    background:#eeeeee;
+}

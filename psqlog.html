@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<!-- Copyright 2007 Eugene Koontz. This document may be distributed 
+       according to the terms of the GNU Free
+        Document License -->
+ <head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>Psqlog: Prolog implemented in PostgreSQL</title>
+  <link type="text/css" rel="stylesheet" href="toc.css" />
+  <script type="text/javascript">
+  var current = "summary";
+  function hide_contents() {
+    document.getElementById('key').style.display='none';
+    document.getElementById('maincontent').style.width='100%';
+  }
+
+  function sectionfocus(id) {
+
+    var maincontent = document.getElementById("maincontent");
+
+    if (current != id) {
+      var node = document.getElementById(current);
+      node = document.getElementById(current+"_key");
+      node.setAttribute("class","normal");
+    }
+
+    current = id;
+    var node = document.getElementById(id);
+
+    node = document.getElementById(current+"_key");
+    node.setAttribute("class","focused");
+
+    document.location='#'+id;
+  }
+
+</script>
+ </head>
+ <body>
+  <div id="contents" class="shadow">
+   <div>
+    <h3>Contents</h3>
+    <ul style="background:#eeeeee;">
+     <li id="summary_key" onclick="sectionfocus('summary')">Summary</li>
+     <li id="examplesi_key" onclick="sectionfocus('examplesi')">Example: Intro</li>
+     <li id="examplesii_key" onclick="sectionfocus('examplesii')">Example: Rules and Tables</li>
+     <li id="examplesiii_key" onclick="sectionfocus('examplesiii')">Example: Queries</li>
+     <li id="usage_key" onclick="sectionfocus('usage')">Usage</li>
+     <li id="limitations_key" onclick="sectionfocus('limitations')">Limitations</li>
+     <li id="relatedwork_key" onclick="sectionfocus('relatedwork')">Related Work</li>
+     <li id="software_key" onclick="sectionfocus('software')">Software</li>
+    </ul>
+   </div>
+  </div>
+  <div class="right">
+   <h2 style="padding:0.5em">Psqlog: Prolog implemented in PostgreSQL</h2>
+   <div id="summary" class="shadow" style="width:100%">
+    <div>
+     <h3>Summary</h3>
+     <p>Psqlog allows you to discover information latently present in your
+existing relational database. Psqlog lets you use the familiar and
+widely-available SQL query language to discover this
+information. The information latently present refers to the logical relationships
+that you specify between rows and columns in your database.
+</p>
+     <p> Psqlog is intended to be a practical extension of
+  PostgreSQL rather than a language in itself. That is, its most natural application is to analyze existing PostgreSQL databases, rather than being used as a dialect of Prolog.
+</p>
+    </div>
+   </div>
+   <div id="examplesi" class="shadow" style="width:100%">
+    <div>
+     <h3>Example: Introduction</h3>
+     <p>Suppose you are keeping track of who reports to who in an organization. The organization's reporting structure can be represented graphically as:</p>
+     <img src="org-chart.png"/>
+     <p>
+      It is evident from the chart that Eugene reports to Gustavo, and that Gustavo reports to Lex.
+      </p>
+     <p>
+      Now suppose your database stores these <i>direct</i> reporting relationships. That is, you can query your database to know <i>directly</i> reports to who. However, you would also like to know <i>all</i> of the subordinates of a given person. That is, you'd like to know that not only does Bob reports to Eugene, but that Bob <i>also</i> reports to Gustavo, and to Lex as well. In other words, you'd like to know who <i>all</i> of the superiors of a given employee are, not just his or her direct superior.</p>
+     <p>The reasoning is more formally expressed by the following two rules:</p>
+     <p>
+      <i>A</i> is a superior of <i>B</i> if:
+
+<ol>
+       <li>
+        <i>A</i> is a manager (ie a direct superior) of <i>B</i>, or </li>
+       <li>there is someone named <i>C</i>, who <i>A</i> manages, and who is himself a superior of <i>B</i>.</li>
+      </ol>
+
+    Note that rule 2 is a recursive definition: it defines the 'superior' relation between <i>A</i> and <i>B</i> in terms of the 'superior' relation between <i>C</i> and <i>B</i>.
+</p>
+     <p>
+Psqlog gives you the ability to express these rules, such as 1) and 2) above, in your database, and to then make queries in the familiar form of SQL. 
+</p>
+    </div>
+   </div>
+   <div id="examplesii" class="shadow" style="width:100%">
+    <div>
+     <h3>Examples: Rules and Tables</h3>
+     <p>We store the information shown in the above diagram in a conventional, normalized table form as:
+
+<h4>Employee table</h4>
+      <div class="code">
+       <pre>
+company=# \d employee
+                                     Table "public.employee"
+    Column    |          Type          |                 Modifiers                        
+--------------+------------------------+-----------------------------------
+ employee_id  | integer                | not null default nextval
+                                            ('employee_sequence'::regclass)
+ name         | character varying(256) | 
+Indexes:
+    "employee_pkey" PRIMARY KEY, btree (employee_id)
+</pre>
+      </div>
+      <h4>Management table</h4>
+      <div class="code">
+       <pre>
+company=# \d management;
+                              Table "public.management"
+    Column     |  Type   |                         Modifiers                         
+---------------+---------+------------------------------------------
+ management_id | integer | not null default nextval
+                            ('management_sequence'::regclass)
+ manager       | integer | 
+ managed       | integer | 
+Indexes:
+    "management_pkey" PRIMARY KEY, btree (management_id)
+Foreign-key constraints:
+    "management_managed_fkey" 
+          FOREIGN KEY (managed) REFERENCES employee(employee_id)
+    "management_manager_fkey" 
+          FOREIGN KEY (manager) REFERENCES employee(employee_id)
+</pre>
+      </div>
+     </p>
+     <p>The above org chart would be added to the database by INSERTs such as the following:
+
+</p>
+     <div class="code">
+      <pre>
+company=# INSERT into employee (name) VALUES ('Eugene');
+company=# INSERT into employee (name) VALUES ('Bob');
+company=# INSERT into management (manager, managed) VALUES 
+company=# SELECT employee_id FROM employee WHERE name='Eugene'; 
+ employee_id 
+-------------
+           4
+(1 row)
+
+company=# SELECT id FROM employee WHERE name='Bob' 
+ employee_id 
+-------------
+           8
+(1 row)
+
+company=# INSERT INTO management (manager, managed) VALUES (4,8);
+
+</pre>
+     </div>
+    </div>
+   </div>
+   <div id="examplesiii" class="shadow" style="width:100%">
+    <div>
+     <h3>Examples: Queries</h3>
+     <p>
+Now, we can query the database after loading this database with Psqlog functionality:
+</p>
+     <div class="code">
+      <pre>-- who's Lex the boss of?
+company=# SELECT unify_arg1 AS A, unify_arg2 AS B FROM 
+          unify2( 'superior' , 'A' , 'B' , 'Lex',NULL );
+  a  |    b    
+-----+---------
+ Lex | Bob
+ Lex | Greg
+ Lex | Eugene
+ Lex | Salman
+ Lex | Gustavo
+ Lex | Lei
+ Lex | Xavier
+(7 rows)</pre>
+     </div>
+     <div class="code">
+      <pre>-- who are Bob's bosses?
+SELECT unify_arg1 AS A, unify_arg2 AS B FROM 
+       unify2( 'superior' , 'A' , 'B' , NULL,'Bob' );
+
+    a    |  b  
+---------+-----
+ Gustavo | Bob
+ Lex     | Bob
+ Eugene  | Bob
+(3 rows)
+
+
+-- does Bob work for Gustavo? (yes)
+SELECT unify_arg1 AS A, unify_arg2 AS B FROM 
+       unify2( 'superior' , 'A' , 'B' ,
+                         'Gustavo','Bob' );
+
+    a    |  b  
+---------+-----
+ Gustavo | Bob
+(1 row)
+
+
+-- does Greg work for Eugene? (no)
+SELECT unify_arg1 AS A, unify_arg2 AS B FROM 
+       unify2( 'superior' , 'A' , 'B' ,
+                          'Greg','Eugene' );
+
+ a | b 
+---+---
+(0 rows)
+</pre>
+     </div>
+    </div>
+   </div>
+   <div id="usage" class="shadow" style="width:100%">
+    <div>
+     <h3>Usage</h3>
+     <p></p>
+     <ol>
+      <li>Get the <a href="#software">software</a>.</li>
+      <li>make sure you have xsltproc installed (part of libxslt usually).</li>
+      <li>make sure you have PostgreSQL installed, running, and accessible to localhost clients.</li>
+      <li>set up a PostgreSQL user named "www" who has permission to create new databases.</li>
+      <li>run "sh company.sh"</li>
+     </ol>
+    </div>
+   </div>
+   <div id="limitations" class="shadow" style="width:100%">
+    <div>
+     <h3>Limitations</h3>
+     <h4>Prolog compliance</h4>
+
+  Psqlog is currently not complete as a Prolog implementation. Currently it lacks:
+
+  <ul>
+      <li>Syntax is SQL, not Prolog (see <a href="#usage">Usage</a>)</li>
+      <li>Support for lists</li>
+      <li>Support for the "cut" operator</li>
+      <li>Support for DCGs (Definite Clause Grammars</li>
+     </ul>
+     <h4>Efficiency</h4>
+     <p>  Psqlog currently makes use of temporary tables that it must update. This is overly expensive: instead, future versions of Psqlog will make use of in-memory data structures, which will likely be represented as SQL SELECTs (of constants rather than tables).
+ </p>
+    </div>
+   </div>
+   <div id="relatedwork" class="shadow" style="width:100%">
+    <div>
+     <h3>Related Work</h3>
+     <p>
+As mentioned above, Psqlog is intended to be a practical extension of
+  PostgreSQL rather than a language in itself. The links mentioned below should
+  be compared to Psqlog with that in mind.
+</p>
+     <p></p>
+     <ul>
+      <li>
+       <a href="http://www.clip.dia.fi.upm.es/Software/Ciao/ciao_html/ciao_152.html">Ciao Prolog to SQL translator</a> allows access to a sql database from prolog.</li>
+      <li>
+       <a href="http://xsb.sourceforge.net/index.html">XSB</a> is a Logic Programming and Deductive Database system for Unix and Windows.</li>
+      <li>
+       <a href="http://gborg.postgresql.org/project/gppostgresql/projdisplay.php">gppostgresql</a>, a GNU-Prolog interface to PostgreSQL.</li>
+     </ul>
+    </div>
+   </div>
+   <div id="software" class="shadow" style="width:100%">
+    <div>
+     <h3>Software</h3>
+    All source code <a href="psqlog">available here</a>.
+  Psqlog free for you to use, modify and distribute under the GPL version 2 or higher.  
+</div>
+   </div>
+   <div>
+  Last modified: Sat Jun 30 20:51:10 PDT 2007
+</div>
+  </div>
+<!-- hhmts end -->
+ </body>
+</html>

@@ -1,0 +1,124 @@
+I. This shows how to create a wide-table view for a canonical 1.0 pred/arg table pair :
+
+psqlog=# \d pred
+                                Table "public.pred"
+  Column  |         Type          |                   Modifiers                    
+----------+-----------------------+------------------------------------------------
+ id       | integer               | not null default nextval('pred_seq'::regclass)
+ name     | character varying(64) | 
+ antec_of | integer               | 
+Indexes:
+    "pred_pkey" PRIMARY KEY, btree (id)
+
+psqlog=# \d arg
+                                Table "public.arg"
+  Column  |         Type          |                   Modifiers                   
+----------+-----------------------+-----------------------------------------------
+ id       | integer               | not null default nextval('arg_seq'::regclass)
+ type     | character(1)          | 
+ name     | character varying(64) | 
+ pred_id  | integer               | 
+ position | integer           
+
+
+into a wider one-pred-per-line relation:
+
+CREATE VIEW wide_pred AS 
+
+  SELECT pred.id AS pred_id,pred.name AS pred,
+         arg1.type AS arg1_type,  arg1.name AS arg1_name, 
+         arg2.type AS arg2_type,  arg2.name AS arg2_name
+
+       FROM pred 
+       LEFT JOIN arg AS arg1 ON pred.id = arg1.pred_id AND arg1.position = 1 
+       LEFT JOIN arg AS arg2 ON pred.id = arg2.pred_id AND arg2.position = 2
+       LEFT JOIN arg AS arg3 ON pred.id = arg3.pred_id AND arg2.position = 3
+
+   ORDER BY pred.id,arg1.position;
+
+
+
+II. This shows how to create a wide-table view for a conventional set of tables:
+
+
+II. 1. predicate with ( > 1) params.
+
+CREATE VIEW management_wide_pred AS
+
+  SELECT management.management_id AS pred_id, 'management' AS pred, 
+         'c' AS arg1_type, arg1.name AS arg1_name, 
+         'c' AS arg2_type, arg2.name AS arg2_name 
+
+      FROM management 
+      LEFT JOIN employee AS arg1 ON management.manager = arg1.employee_id 
+      LEFT JOIN employee AS arg2 ON management.managed = arg2.employee_id;
+
+
+We can then derive the management_pred and management_arg views from 
+management_wide_pred like so:
+
+
+CREATE VIEW manager_pred AS 
+   SELECT pred_id, pred, NULL AS antec_of FROM manager_wide_pred;   
+
+CREATE VIEW manager_arg AS
+
+    SELECT manager_wide_pred.arg1_type AS "type", 
+           manager_wide_pred.arg1_name AS name, 
+           manager_wide_pred.pred_id, 1 AS "position"
+          FROM manager_wide_pred
+
+   UNION 
+
+    SELECT manager_wide_pred.arg2_type AS "type", 
+           manager_wide_pred.arg2_name AS name, 
+           manager_wide_pred.pred_id, 2 AS "position"
+          FROM manager_wide_pred;
+
+The above could then be used in psqlog as :
+
+manager(X,Y).
+
+II. 1. predicate with 1 params.
+
+A one-argument function, such as telecommutes(X), would be, similarly,
+be represented as :
+
+CREATE VIEW tele_wide_pred AS
+
+  SELECT tele.employee_id AS pred_id, 'tele' AS pred, 
+         'c' AS arg1_type, tele.name AS arg1_name
+
+      FROM employee AS tele WHERE tele.telecommutes = 'true';
+
+CREATE VIEW tele_pred AS 
+   SELECT pred_id, pred, NULL AS antec_of FROM tele_wide_pred;   
+
+CREATE VIEW tele_arg AS
+
+    SELECT tele_wide_pred.arg1_type AS "type", 
+           tele_wide_pred.arg1_name AS name, 
+           tele_wide_pred.pred_id, 1 AS "position"
+          FROM tele_wide_pred;
+
+This implements the psqlog predicate:
+
+telecommutes(X)
+
+III. Creating final 'pred' and 'arg' views.
+
+Finally, we create a union of all the above, to create a 'pred' and 'arg' super-view.
+
+Suppose we have the two predicates illustrated above:
+
+manager(X,Y)
+telecommutes(X)
+
+We simply create two views which UNION the relevant sets of all preds {'tele_pred','manager_pred'}
+and the set of all args {'tele_arg', 'manager_arg'} :
+
+CREATE VIEW pred AS SELECT * FROM manager_pred UNION SELECT * FROM tele_pred;
+
+CREATE VIEW arg AS SELECT * FROM manager_arg UNION SELECT * FROM tele_arg;
+
+
